@@ -10,7 +10,7 @@ type Params = {
 
 // 'EMAIL_SENDER' provides the actual sender email address, configure in your environment variables while ready for production (and make sure you setup and verified the domain at 'resend email service' while production)
 const getFromEmail = () =>
-    NODE_ENV === "development" ? "onboarding@resend.dev" : EMAIL_SENDER;        
+    NODE_ENV === "development" ? "onboarding@resend.dev" : EMAIL_SENDER;
 
 const getToEmail = (to: string) =>
     NODE_ENV === "development" ? "delivered@resend.dev" : to;

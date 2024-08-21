@@ -2,7 +2,6 @@ import API from "../config/apiClient";
 
 export const register = async (data) => API.post("http://localhost:4000/auth/register", data);
 export const login = async (data) => API.post("http://localhost:4000/auth/login", data);
-// export const login = async (data) => API.post("auth/login", data);
 export const logout = async () => API.get("http://localhost:4000/auth/logout");
 export const verifyEmail = async (verificationCode) =>
   API.get(`http://localhost:4000/auth/email/verify/${verificationCode}`);

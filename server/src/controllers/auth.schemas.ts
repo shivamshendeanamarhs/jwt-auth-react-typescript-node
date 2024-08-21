@@ -18,7 +18,20 @@ export const registerSchema = loginSchema.extend({
 
 export const verificationCodeSchema = z.string().min(1).max(24);
 
+export const verifyEmailWithOTPSchema = z.object({
+    email: z.string().email(),  
+    otp: z.string().min(4),     
+  });
+
 export const resetPasswordSchema = z.object({
     password: passwordSchema,
     verificationCode: verificationCodeSchema,
 });
+
+export const resetPasswordWithOTPSchema = z.object({
+    email: z.string().email(), 
+    otp: z.string().min(4),    
+    password: z.string().min(6) 
+  });
+
+  

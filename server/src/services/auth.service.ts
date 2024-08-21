@@ -1,4 +1,4 @@
-import UserModel from "../models/user.model";
+import UserModel, { UserDocument } from "../models/user.model";
 import VerificationCodeModel from "../models/verificaitonCode.model";
 import VerificationCodeType from "../constants/VerificationCodeType";
 import { fiveMinutesAgo, oneHourFromNow, oneYearFromNow, ONE_DAY_MS, thirtyDaysFromNow } from "../utils/date";
@@ -10,6 +10,8 @@ import { getPasswordResetTemplate, getVerifyEmailTemplate } from "../utils/email
 import { APP_ORIGIN } from "../constants/env";
 import { sendMail } from "../utils/sendMail";
 import { hashValue } from "../utils/bcrypt";
+import nodemailer from "nodemailer";
+import mongoose from "mongoose";
 
 export type CreateAccountParams = {
   email: string;
@@ -19,65 +21,62 @@ export type CreateAccountParams = {
 
 //REGISTRATION PART
 export const createAccount = async (data: CreateAccountParams) => {
-  //**********verify user deosn't exist
-  const existingUser = await UserModel.exists({
-    email: data.email,
-  });
-
+  //**********Verify user doesn't exist
+  const existingUser = await UserModel.exists({ email: data.email });
   appAssert(!existingUser, CONFLICT, "Email already in use");
 
-  //**********if dont exist, create user
+  //**********Create user
   const user = await UserModel.create({
     email: data.email,
     password: data.password,
   });
 
-  const userId = user._id
+  const userId = user._id;
 
-  //**********varification code (after creating user) to verify email
+  //Generate a random code
+  const code = generateRandomCode();
+
+  console.log("Generated Verification Code:", code);
+
+  //**********Create verification code document to verify email
   const verificationCode = await VerificationCodeModel.create({
     userId,
     type: VerificationCodeType.EmailVerification,
+    code, // Ensure the code is included
     expiresAt: oneYearFromNow(),
   });
 
   const url = `${APP_ORIGIN}/email/verify/${verificationCode._id}`;
 
-  //**********send verificatiotn email
+  //**********Send verification email
   const { error } = await sendMail({
     to: user.email,
     ...getVerifyEmailTemplate(url),
   });
-  // ignore email errors for now
+
+  // Ignore email errors for now
   if (error) console.error(error);
 
-  //**********create session
+  //**********Create session
   const session = await SessionModel.create({
     userId,
     userAgent: data.userAgent,
   });
 
-  //**********sign access token and refresh token
-  const refreshToken = signToken(
-    {
-      sessionId: session._id
-    },
-    refreshTokenSignOptions
-  );
-
-  const accessToken = signToken(
-    {
-      userId,
-      sessionId: session._id
-    }
-  );
+  //**********Sign access token and refresh token
+  const refreshToken = signToken({ sessionId: session._id }, refreshTokenSignOptions);
+  const accessToken = signToken({ userId, sessionId: session._id });
 
   //**********return user and token
   return {
-    user: user.omitPassword(),      //user.omitPassword use don't show password to the user
+    user: user.omitPassword(), // Exclude password from the user object
     accessToken,
     refreshToken,
   };
+};
+
+const generateRandomCode = (length = 6) => {
+  return Math.random().toString(36).substr(2, length).toUpperCase();
 };
 
 
@@ -94,7 +93,7 @@ export const loginUser = async ({ email, password, userAgent }: LoginParams) => 
   const user = await UserModel.findOne({ email });
   appAssert(user, UNAUTHORIZED, "Invalid email or password");
 
-  //**********validate password from the request
+  // **********validate password from the request
   const isValid = await user.comparePassword(password);
   appAssert(isValid, UNAUTHORIZED, "Invalid email or password");
 
@@ -105,14 +104,8 @@ export const loginUser = async ({ email, password, userAgent }: LoginParams) => 
     userAgent,
   });
 
-  //**********payload for refreshToken
-  const sessionInfo = {
-    sessionId: session._id
-  }
-
-  //**********sign access token and refresh token
-  const refreshToken = signToken(sessionInfo, refreshTokenSignOptions);
-  const accessToken = signToken({ ...sessionInfo, userId, });
+  const refreshToken = signToken({ sessionId: session._id }, refreshTokenSignOptions);
+  const accessToken = signToken({ sessionId: session._id, userId });
 
   //**********return token
   return {
@@ -161,98 +154,157 @@ export const refreshUserAccessToken = async (refreshToken: string) => {
 };
 
 //VERIFY EMAIL PART
-export const verifyEmail = async (code: string) => {
-  //**********get verification code 
-  const validCode = await VerificationCodeModel.findOne({
-    _id: code,
-    type: VerificationCodeType.EmailVerification,
-    expiresAt: { $gt: new Date() },
-  });
-  appAssert(validCode, NOT_FOUND, "Invalid or expired verification code");
-
-  //**********get user by ID and update user to verified
-  const updatedUser = await UserModel.findByIdAndUpdate(
-    validCode.userId, { verified: true, }, { new: true }
-  );
-  appAssert(updatedUser, INTERNAL_SERVER_ERROR, "Failed to verify email");
-
-  //**********delete verification code (after successful verification)
-  await validCode.deleteOne();
-
-  //**********return updated user
-  return {
-    user: updatedUser.omitPassword(),
-  };
-};
-
-//SEND PASSWORD RESET EMAIL PART
-export const sendPasswordResetEmail = async (email: string) => {
-  //**********get user by email
+export const sendEmailVerificationOTP = async (email: string) => {
+  // Get user by email
   const user = await UserModel.findOne({ email });
   appAssert(user, NOT_FOUND, "User not found");
 
-  //**********check email rate limit [check for max password reset requests (2 emails in 5min)]
-  const fiveMinAgo = fiveMinutesAgo();
-  const count = await VerificationCodeModel.countDocuments({
-    userId: user._id,
-    type: VerificationCodeType.PasswordReset,
-    createdAt: { $gt: fiveMinAgo },
-  });
-  appAssert(count <= 1, TOO_MANY_REQUESTS, "Too many requests, please try again later");
+  // Generate a 4-digit OTP
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
-  //**********create verification code 
-  const expiresAt = oneHourFromNow();
-  const verificationCode = await VerificationCodeModel.create({
+  // Save OTP to the database with expiration
+  const expiresAt = oneHourFromNow(); // Set expiration time for OTP
+  await VerificationCodeModel.create({
     userId: user._id,
+    code: otp,
+    type: VerificationCodeType.EmailVerification,
+    expiresAt,
+  });
+
+  // Send OTP via Nodemailer
+  const transporter = nodemailer.createTransport({
+    service: 'gmail', // or any other email service you prefer
+    auth: {
+      user: 'shivamshende300@gmail.com',
+      pass: 'hdmb nhom nfij egvv',
+    },
+  });
+
+  const mailOptions = {
+    from: '"Shivam Shende" <shivamshende300@gmail.com>',
+    to: email,
+    subject: "Your Email Verification OTP",
+    text: `Your OTP for email verification is ${otp}. It is valid for 1 hour.`,
+  };
+
+  await transporter.sendMail(mailOptions);
+};
+
+
+export const verifyEmailWithOTP = async (email: string, otp: string) => {
+  // Get the verification code from the database
+  const validCode = await VerificationCodeModel.findOne({
+    code: otp,
+    type: VerificationCodeType.EmailVerification,
+    expiresAt: { $gt: new Date() },
+  });
+  appAssert(validCode, NOT_FOUND, "Invalid or expired OTP");
+
+  // Get user by email and update to verified
+  const user = await UserModel.findOneAndUpdate(
+    { email, _id: validCode.userId },
+    { verified: true },
+    { new: true }
+  );
+  appAssert(user, INTERNAL_SERVER_ERROR, "Failed to verify email");
+
+  // Delete the verification code after successful verification
+  await validCode.deleteOne();
+
+  return { user: user.omitPassword() };
+};
+
+//RESET PASSWORD OTP EMAIL PART
+export const sendPasswordResetOTP = async (email: string) => {
+  // Get user by email
+  const user = await UserModel.findOne({ email });
+  appAssert(user, NOT_FOUND, "User not found");
+
+  // Generate a 4-digit OTP
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+  // Save OTP to the database with expiration
+  const expiresAt = oneHourFromNow(); // Set expiration time for OTP
+  await VerificationCodeModel.create({
+    userId: user._id,
+    code: otp,
     type: VerificationCodeType.PasswordReset,
     expiresAt,
   });
 
-  //**********send verification email
-  const url = `${APP_ORIGIN}/password/reset?code=${verificationCode._id
-    }&exp=${expiresAt.getTime()}`;
-
-  const { data, error } = await sendMail({
-    to: email,
-    ...getPasswordResetTemplate(url),
+  // Send OTP via Nodemailer part
+  const transporter = nodemailer.createTransport({
+    service: 'gmail', // or any other email service you prefer
+    auth: {
+      user: 'shivamshende300@gmail.com',
+      pass: 'hdmb nhom nfij egvv',
+    },
   });
-  appAssert(data?.id, INTERNAL_SERVER_ERROR, `${error?.name} - ${error?.message}`);
 
-  //**********return seccess response
-  return {
-    url,
-    emailId: data.id,
+  const mailOptions = {
+    from: '"Shivam Shende" <shivamshende300@gmail.com>',
+    to: email,
+    subject: "Your Password Reset OTP",
+    text: `Your OTP for password reset is ${otp}. It is valid for 1 hour.`,
   };
+
+  await transporter.sendMail(mailOptions);
 };
 
-//RESET PASSWORD PART
 type ResetPasswordParams = {
+  email: string;
+  otp: string;
   password: string;
-  verificationCode: string;
-};
+}
 
-export const resetPassword = async ({ verificationCode, password, }: ResetPasswordParams) => {
-  //**********get the verification code
+//RESET PASSWORD THROUGH OTP PART
+export const resetPasswordWithOTP = async ({ email, otp, password }: ResetPasswordParams) => {
+  // Log the OTP received and the user's email
+  console.log("Received OTP:", otp, "for email:", email);
+
+  // Get the verification code from the database
   const validCode = await VerificationCodeModel.findOne({
-    _id: verificationCode,
+    code: otp,  // Search for the OTP in the `code` field
     type: VerificationCodeType.PasswordReset,
     expiresAt: { $gt: new Date() },
   });
-  appAssert(validCode, NOT_FOUND, "Invalid or expired verification code");
 
-  //**********update user's password
-  const updatedUser = await UserModel.findByIdAndUpdate(validCode.userId, {
-    password: await hashValue(password),
-  });
-  appAssert(updatedUser, INTERNAL_SERVER_ERROR, "Failed to reset password");
+  // Log the found OTP record or the error
+  if (!validCode) {
+    console.log("Could not find the OTP:", otp);
+  } else {
+    console.log("OTP matched:", validCode.code);
+  }
 
-  //**********delete the verification code
+  // Ensure the OTP exists and is valid
+  appAssert(validCode, NOT_FOUND, "Invalid or expired OTP");
+
+  // Validate the user associated with the OTP
+  const user = await UserModel.findOne({ email });
+  appAssert(user, UNAUTHORIZED, "User not found");
+
+  // Log the user and verification code association
+  console.log("User ID:", user._id, "Verification code user ID:", validCode.userId);
+
+  // Ensure that user._id is treated as mongoose.Types.ObjectId
+  const userId = user._id as mongoose.Types.ObjectId;
+
+  if (!userId.equals(validCode.userId)) {
+    throw new Error("Unauthorized access");
+  }
+
+  // Check if the userId matches the one associated with the OTP
+  appAssert(userId.equals(validCode.userId), UNAUTHORIZED, "Unauthorized access");
+
+  // Update user's password
+  user.password = await hashValue(password);
+  await user.save();
+
+  // Delete the verification code after successful password reset
   await validCode.deleteOne();
 
-  //delete all sessions
-  await SessionModel.deleteMany({
-    userId: validCode.userId
-  });
+  // Delete all sessions associated with the user
+  await SessionModel.deleteMany({ userId });
 
-  return { user: updatedUser.omitPassword() };
+  return { user: user.omitPassword() };
 };

@@ -1,8 +1,6 @@
 import { CookieOptions, Response } from "express";
 import { fifteenMinutesFromNow, thirtyDaysFromNow } from "./date";
 
-// const secure = process.env.NODE_ENV !== "development";
-
 export const REFRESH_PATH = "/auth/refresh";
 
 const defaults: CookieOptions = {

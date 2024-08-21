@@ -1,4 +1,3 @@
-//Error handling middleware
 import { z } from "zod";
 import { Response, Request, NextFunction, ErrorRequestHandler } from 'express';
 import { BAD_REQUEST, INTERNAL_SERVER_ERROR } from "../constants/http";

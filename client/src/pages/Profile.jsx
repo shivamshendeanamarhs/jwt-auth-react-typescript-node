@@ -24,6 +24,8 @@ const Profile = () => {
           {new Date(createdAt).toLocaleDateString("en-US")}
         </span>
       </p>
+
+      <button>verify Email</button>
     </div>
   );
 };

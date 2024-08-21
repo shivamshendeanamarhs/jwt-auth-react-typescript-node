@@ -1,25 +1,32 @@
 import catchErrors from "../utils/catchErrors";
-import { createAccount, loginUser, refreshUserAccessToken, resetPassword, sendPasswordResetEmail, verifyEmail } from "../services/auth.service";
+import { createAccount, loginUser, refreshUserAccessToken, resetPasswordWithOTP, sendEmailVerificationOTP, sendPasswordResetOTP, verifyEmailWithOTP } from "../services/auth.service";
 import { CREATED, OK, UNAUTHORIZED } from "../constants/http";
 import { clearAuthCookies, getAccessTokenCookieOptions, getRefreshTokenCookieOptions, setAuthCookies } from "../utils/cookies";
-import { emailSchema, registerSchema, loginSchema, verificationCodeSchema, resetPasswordSchema } from "./auth.schemas";
+import { emailSchema, registerSchema, loginSchema, verificationCodeSchema, resetPasswordSchema, resetPasswordWithOTPSchema, verifyEmailWithOTPSchema } from "./auth.schemas";
 import { verifyToken } from "../utils/jwt";
 import SessionModel from "../models/session.model";
 import appAssert from "../utils/appAssert";
 
 export const registerHandler = catchErrors(
   async (req, res) => {
-    //validate service (validate and parse the incoming request body accoring to registerSchema)
+    // Validate and parse the incoming request body according to registerSchema
     const request = registerSchema.parse({
       ...req.body,
       userAgent: req.headers["user-agent"],
     });
 
-    //Call service (call the createAccount service to handle account creation)
+    // Call the createAccount service to handle account creation
     const { user, accessToken, refreshToken } = await createAccount(request);
 
-    //return response
-    return setAuthCookies({ res, accessToken, refreshToken }).status(CREATED).json(user);
+    // Send email verification OTP
+    await sendEmailVerificationOTP(user.email);
+
+    // Return the response with success message
+    return setAuthCookies({ res, accessToken, refreshToken })
+      .status(CREATED)
+      .json({
+        message: "User registered successfully. Verification OTP sent to your email.",
+      });
   }
 );
 
@@ -78,35 +85,50 @@ export const refreshHandler = catchErrors(async (req, res) => {
   });
 });
 
-export const verifyEmailHandler = catchErrors(async (req, res) => {
-  // validate and extract verification code (parse and validate the verification code from the request parameters)
-  const verificationCode = verificationCodeSchema.parse(req.params.code);
-
-  // verify email (call the verifyEmail service to validate and process the verification code)
-  await verifyEmail(verificationCode);
-
-  // return success response 
-  return res.status(OK).json({ message: "Email was successfully verified" });
-});
-
-export const sendPasswordResetHandler = catchErrors(async (req, res) => {
-  //validate and extract email (parse and validate the email address from the request body)
+export const sendEmailVerificationOTPHandler = catchErrors(async (req, res) => {
+  // Validate and extract email
   const email = emailSchema.parse(req.body.email);
 
-  // send password reset email (call the sendPasswordResetEmail service to send a password reset email)
-  await sendPasswordResetEmail(email);
+  // Send email verification OTP
+  await sendEmailVerificationOTP(email);
 
-  // return success response 
-  return res.status(OK).json({ message: "Password reset email sent" });
+  // Return success response
+  return res.status(OK).json({ message: "Email verification OTP sent to your email" });
 });
 
-export const resetPasswordHandler = catchErrors(async (req, res) => {
-  // validate and extract reset password request (parse and validate the request body containing the reset password details)
-  const request = resetPasswordSchema.parse(req.body);
+export const verifyEmailWithOTPHandler = catchErrors(async (req, res) => {
+  // Validate and extract verification OTP request
+  const { email, otp } = verifyEmailWithOTPSchema.parse(req.body);
 
-  // reset password (call the resetPassword service to update the user's password)
-  await resetPassword(request);
+  // Verify the OTP
+  await verifyEmailWithOTP(email, otp);
 
-  // clear authentication cookies and return success response
+  // Return success response
+  return res.status(OK).json({ message: "Email was successfully verified." });
+});
+
+//reset password via otp
+//send email
+export const sendPasswordResetOTPHandler = catchErrors(async (req, res) => {
+  // Validate and extract email
+  const email = emailSchema.parse(req.body.email);
+
+  // Send password reset OTP
+  await sendPasswordResetOTP(email);
+
+  // Return success response
+  return res.status(OK).json({ message: "Password reset OTP sent to your email" });
+});
+
+//resest password with otp
+export const resetPasswordWithOTPHandler = catchErrors(async (req, res) => {
+  // Validate and extract reset password request
+  // const request = resetPasswordSchema.parse(req.body);
+  const request = resetPasswordWithOTPSchema.parse(req.body);
+
+  // Reset password
+  await resetPasswordWithOTP(request);
+
+  // Clear authentication cookies and return success response
   return clearAuthCookies(res).status(OK).json({ message: "Password was reset successfully" });
 });
